@@ -26,19 +26,20 @@ import com.github.tomakehurst.wiremock.http.Response;
 import com.github.tomakehurst.wiremock.stubbing.ServeEvent;
 import java.net.URI;
 import java.util.List;
+import java.util.Map;
 import java.util.stream.Collectors;
 
+/**
+ * At the moment this transformer works with Proxy responses to replace the host and port. If we
+ * decide to extend this to a generic host/port replacement we should rename the class and update
+ * the transformer name
+ */
 public class ProxiedHostnameRewriteResponseTransformer implements ResponseTransformerV2 {
 
   @Override
   public Response transform(Response response, ServeEvent serveEvent) {
-    if (!serveEvent.getResponseDefinition().isProxyResponse()) {
-      return response;
-    }
 
-    String requestHost = serveEvent.getRequest().getHost();
-    String proxyTargetUrl = serveEvent.getResponseDefinition().getProxyBaseUrl();
-    String proxyTargetHost = URI.create(proxyTargetUrl).getHost();
+    var substitutions = getSubstitutions(serveEvent);
 
     // Update headers
     List<HttpHeader> updatedHeaderList =
@@ -48,7 +49,16 @@ public class ProxiedHostnameRewriteResponseTransformer implements ResponseTransf
                     new HttpHeader(
                         header.key(),
                         header.values().stream()
-                            .map(value -> value.replace(proxyTargetHost, requestHost))
+                            .map(
+                                value -> {
+                                  for (Map.Entry<String, String> substitution :
+                                      substitutions.entrySet()) {
+                                    value =
+                                        value.replace(
+                                            substitution.getKey(), substitution.getValue());
+                                  }
+                                  return value;
+                                })
                             .collect(Collectors.toList())))
             .collect(Collectors.toList());
     HttpHeaders updatedHeaders = new HttpHeaders(updatedHeaderList);
@@ -62,11 +72,21 @@ public class ProxiedHostnameRewriteResponseTransformer implements ResponseTransf
         && ContentTypes.determineIsTextFromMimeType(getMimeType(response))) {
       byte[] updatedBody;
       if (Gzip.isGzipped(initialBody)) {
-        String uncompressedBody =
-            Gzip.unGzipToString(initialBody).replace(proxyTargetHost, requestHost);
+        String uncompressedBody = Gzip.unGzipToString(initialBody);
+        for (Map.Entry<String, String> substitution : substitutions.entrySet()) {
+          uncompressedBody =
+              uncompressedBody.replace(substitution.getKey(), substitution.getValue());
+        }
         updatedBody = Gzip.gzip(uncompressedBody.getBytes());
       } else {
-        updatedBody = response.getBodyAsString().replace(proxyTargetHost, requestHost).getBytes();
+        String responseBodyAsString = response.getBodyAsString();
+
+        for (Map.Entry<String, String> substitution : substitutions.entrySet()) {
+          responseBodyAsString =
+              responseBodyAsString.replace(substitution.getKey(), substitution.getValue());
+        }
+
+        updatedBody = responseBodyAsString.getBytes();
       }
       responseBuilder.body(updatedBody);
 
@@ -104,5 +124,31 @@ public class ProxiedHostnameRewriteResponseTransformer implements ResponseTransf
     return responseHeaders != null && responseHeaders.getContentTypeHeader() != null
         ? responseHeaders.getContentTypeHeader().mimeTypePart()
         : null;
+  }
+
+  /**
+   * This method can be used to pull substitution data from other sources such as stub metadata
+   *
+   * @param serveEvent the serveEvent for this request/response
+   * @return The Map of substitutions to make
+   */
+  private static Map<String, String> getSubstitutions(ServeEvent serveEvent) {
+    Map<String, String> substitutions = Map.of();
+
+    if (serveEvent.getResponseDefinition().isProxyResponse()) {
+      String requestHost = serveEvent.getRequest().getHost();
+      String requestPort = ":" + serveEvent.getRequest().getPort();
+
+      URI proxyTargetUrl = URI.create(serveEvent.getResponseDefinition().getProxyBaseUrl());
+      String proxyTargetHost = proxyTargetUrl.getHost();
+      String proxyTargetPort = ":" + proxyTargetUrl.getPort();
+
+      substitutions =
+          Map.of(
+              proxyTargetHost, requestHost,
+              proxyTargetPort, requestPort);
+    }
+
+    return substitutions;
   }
 }

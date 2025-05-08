@@ -83,7 +83,34 @@ class ProxiedHostnameRewriteResponseTransformerTest {
   }
 
   @Test
-  public void rewritesTheHostnameInTheLocationHeaderWhenEnabledAndResponseIsProxied() {
+  public void rewritesTheHostnameInHeader() {
+    initWithDefaultConfig();
+
+    // Set up the target service to return a redirect
+    target.register(
+        get(urlPathEqualTo("/start"))
+            .willReturn(
+                aResponse()
+                    .withStatus(307) // Temporary redirect
+                    .withHeader(LOCATION, "http://127.0.0.1/end")));
+
+    // Set up the proxy with the hostname rewrite transformer
+    proxy.register(
+        any(anyUrl())
+            .willReturn(
+                aResponse()
+                    .withTransformers("proxied-hostname-rewrite")
+                    .proxiedFrom(targetServiceBaseUrl)));
+
+    // Make the request with a specific host header
+    WireMockResponse response = testClient.get("/start");
+
+    // Verify the location header has been rewritten
+    assertThat(response.firstHeader(LOCATION), is("http://localhost/end"));
+  }
+
+  @Test
+  public void rewritesThePortInHeader() {
     initWithDefaultConfig();
 
     // Set up the target service to return a redirect
@@ -107,11 +134,11 @@ class ProxiedHostnameRewriteResponseTransformerTest {
 
     // Verify the location header has been rewritten
     assertThat(
-        response.firstHeader(LOCATION), is("http://localhost:" + targetService.port() + "/end"));
+        response.firstHeader(LOCATION), is("http://localhost:" + proxyingService.port() + "/end"));
   }
 
   @Test
-  public void rewritesTheHostnameInUngzippedBodyWhenEnabledAndResponseIsProxied() {
+  public void rewritesTheHostnameInUngzippedBody() {
     initWithDefaultConfig();
 
     // JSON response with a link containing the localhost hostname
@@ -146,7 +173,44 @@ class ProxiedHostnameRewriteResponseTransformerTest {
   }
 
   @Test
-  public void rewritesTheHostnameInGzippedBodyWhenEnabledAndResponseIsProxied() {
+  public void rewritesThePortInUngzippedBody() {
+    initWithDefaultConfig();
+
+    // JSON response with a link containing the localhost hostname
+    String responseString = "{ \"link\": \"http://127.0.0.1:" + targetService.port() + "/other\" }";
+
+    // Set up the target service to return the JSON
+    target.register(
+        get(urlPathEqualTo("/json"))
+            .willReturn(
+                okJson(responseString)
+                    .withHeader(CONTENT_LENGTH, String.valueOf(responseString.getBytes().length))));
+
+    // Set up the proxy with the hostname rewrite transformer
+    proxy.register(
+        any(anyUrl())
+            .willReturn(
+                aResponse()
+                    .withTransformers("proxied-hostname-rewrite")
+                    .proxiedFrom(targetServiceBaseUrl)));
+
+    // Make the request with a specific host header
+    WireMockResponse response = testClient.get("/json");
+
+    String responseContent = response.content();
+
+    // Verify the link in the response has been rewritten
+    assertThat(
+        "{ \"link\": \"http://localhost:" + proxyingService.port() + "/other\" }",
+        is(responseContent));
+
+    // Verify the content length header is correct
+    assertThat(
+        responseContent.length(), is(Integer.parseInt(response.firstHeader(CONTENT_LENGTH))));
+  }
+
+  @Test
+  public void rewritesTheHostnameInGzippedBody() {
     initWithDefaultConfig();
 
     // JSON response with a link containing the localhost hostname
@@ -183,6 +247,53 @@ class ProxiedHostnameRewriteResponseTransformerTest {
 
     // Expected body with the hostname rewritten
     String expectedBody = "{ \"link\": \"http://localhost/other\" }";
+
+    // Verify the content of the response after unzipping and rewriting
+    assertThat(responseContent, is(expectedBody));
+
+    // Verify the Content-Length header matches the new Gzipped body length
+    byte[] updatedGzippedBody = Gzip.gzip(expectedBody.getBytes());
+    assertThat(response.firstHeader(CONTENT_LENGTH), is(String.valueOf(updatedGzippedBody.length)));
+  }
+
+  @Test
+  public void rewritesThePortInGzippedBody() {
+    initWithDefaultConfig();
+
+    // JSON response with a link containing the localhost hostname
+    String responseString = "{ \"link\": \"http://127.0.0.1:" + targetService.port() + "/other\" }";
+
+    // Gzipping the original body
+    byte[] gzippedBody = Gzip.gzip(responseString.getBytes());
+
+    // Set up the target service to return the JSON
+    target.register(
+        get(urlPathEqualTo("/json"))
+            .willReturn(
+                aResponse()
+                    .withBody(gzippedBody)
+                    .withHeader("Content-Encoding", "gzip")
+                    .withHeader(CONTENT_LENGTH, String.valueOf(gzippedBody.length))
+                    .withHeader("Content-Type", "application/json")));
+
+    // Set up the proxy with the hostname rewrite transformer
+    proxy.register(
+        any(anyUrl())
+            .willReturn(
+                aResponse()
+                    .withTransformers("proxied-hostname-rewrite")
+                    .proxiedFrom(targetServiceBaseUrl)));
+
+    // Make the request with a specific host header
+    WireMockResponse response = testClient.get("/json");
+
+    // Verify the response is still Gzipped
+    assertThat(response.firstHeader("Content-Encoding"), is("gzip"));
+
+    String responseContent = Gzip.unGzipToString(response.binaryContent());
+
+    // Expected body with the hostname rewritten
+    String expectedBody = "{ \"link\": \"http://localhost:" + proxyingService.port() + "/other\" }";
 
     // Verify the content of the response after unzipping and rewriting
     assertThat(responseContent, is(expectedBody));
