@@ -1,0 +1,227 @@
+/*
+ * Copyright (C) 2016-2023 Thomas Akehurst
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package com.github.tomakehurst.wiremock.admin;
+
+import static java.util.Collections.emptyList;
+import static org.hamcrest.MatcherAssert.assertThat;
+import static org.hamcrest.Matchers.is;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.mockito.Mockito.*;
+
+import com.github.tomakehurst.wiremock.http.Request;
+import java.util.Collections;
+import java.util.List;
+import org.junit.jupiter.api.Test;
+import org.mockito.MockedStatic;
+import org.mockito.Mockito;
+
+class LimitAndOffsetPaginatorTest {
+
+  @Test
+  void returnsWholeListWhenBothParametersAreNull() {
+    List<Integer> source = List.of(1, 2, 3, 4, 5);
+    LimitAndOffsetPaginator<Integer> paginator = new LimitAndOffsetPaginator<>(source, null, null);
+
+    List<Integer> result = paginator.select();
+
+    assertThat(result, is(List.of(1, 2, 3, 4, 5)));
+  }
+
+  @Test
+  void returnsEmptyListWhenSourceIsEmpty() {
+    List<Integer> source = emptyList();
+    LimitAndOffsetPaginator<Integer> paginator = new LimitAndOffsetPaginator<>(source, null, null);
+
+    List<Integer> result = paginator.select();
+
+    assertThat(result, is(Collections.emptyList()));
+  }
+
+  @Test
+  void returnsTruncatedListFromStartWhenOnlyLimitIsSpecified() {
+    List<Integer> source = List.of(1, 2, 3, 4, 5);
+    LimitAndOffsetPaginator<Integer> paginator = new LimitAndOffsetPaginator<>(source, 3, null);
+
+    List<Integer> result = paginator.select();
+
+    assertThat(result, is(List.of(1, 2, 3)));
+  }
+
+  @Test
+  void returnsFromOffSetToTheEndWhenOnlyOffsetIsSpecified() {
+    List<Integer> source = List.of(1, 2, 3, 4, 5);
+    LimitAndOffsetPaginator<Integer> paginator = new LimitAndOffsetPaginator<>(source, null, 2);
+
+    List<Integer> result = paginator.select();
+
+    assertThat(result, is(List.of(3, 4, 5)));
+  }
+
+  @Test
+  void returnsRangeWhenBothAreSpecified() {
+    List<Integer> source = List.of(1, 2, 3, 4, 5);
+    LimitAndOffsetPaginator<Integer> paginator = new LimitAndOffsetPaginator<>(source, 3, 1);
+
+    List<Integer> result = paginator.select();
+
+    assertThat(result, is(List.of(2, 3, 4)));
+  }
+
+  @Test
+  void returnsToEndOfListWhenTopBoundIsGreaterThanListSize() {
+    List<Integer> source = List.of(1, 2, 3, 4, 5);
+    LimitAndOffsetPaginator<Integer> paginator = new LimitAndOffsetPaginator<>(source, 7, 3);
+
+    List<Integer> result = paginator.select();
+
+    assertThat(result, is(List.of(4, 5)));
+  }
+
+  @Test
+  void rejectsNegativeLimit() {
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> new LimitAndOffsetPaginator<>(Collections.emptyList(), -1, 3));
+  }
+
+  @Test
+  void rejectsNegativeOffset() {
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> new LimitAndOffsetPaginator<>(Collections.emptyList(), 0, -10));
+  }
+
+  @Test
+  void returnsCorrectTotalCount() {
+    List<String> source = List.of("a", "b", "c", "d");
+    LimitAndOffsetPaginator<String> paginator = new LimitAndOffsetPaginator<>(source, 2, 1);
+
+    int total = paginator.getTotal();
+
+    assertThat(total, is(4));
+  }
+
+  @Test
+  void constructsFromRequestParameters() {
+    List<Integer> source = List.of(10, 20, 30, 40, 50);
+    Request request = mock(Request.class);
+
+    when(request.queryParameter("limit")).thenReturn("2");
+    when(request.queryParameter("offset")).thenReturn("3");
+
+    try (MockedStatic<Conversions> conversions = Mockito.mockStatic(Conversions.class)) {
+      conversions.when(() -> Conversions.toInt("2")).thenReturn(2);
+      conversions.when(() -> Conversions.toInt("3")).thenReturn(3);
+
+      LimitAndOffsetPaginator<Integer> paginator = LimitAndOffsetPaginator.fromRequest(source, request);
+
+      List<Integer> result = paginator.select();
+      assertThat(result, is(List.of(40, 50)));
+    }
+  }
+
+  @Test
+  void noneReturnsAllElements() {
+    List<String> source = List.of("x", "y", "z");
+    LimitAndOffsetPaginator<String> paginator = LimitAndOffsetPaginator.none(source);
+
+    List<String> result = paginator.select();
+
+    assertThat(result, is(List.of("x", "y", "z")));
+  }
+
+  @Test
+  void returnsEmptyListWhenOffsetEqualsSourceSize() {
+    List<Integer> source = List.of(1, 2, 3, 4, 5);
+    LimitAndOffsetPaginator<Integer> paginator = new LimitAndOffsetPaginator<>(source, 2, 5);
+
+    List<Integer> result = paginator.select();
+
+    assertThat(result.isEmpty(), is(true));
+  }
+
+  @Test
+  void handlesNullLimitAndOffsetFromRequest() {
+    List<String> source = List.of("alpha", "beta", "gamma");
+    Request request = mock(Request.class);
+
+    when(request.queryParameter("limit")).thenReturn(null);
+    when(request.queryParameter("offset")).thenReturn(null);
+
+    try (MockedStatic<Conversions> conversions = Mockito.mockStatic(Conversions.class)) {
+      conversions.when(() -> Conversions.toInt(null)).thenReturn(null);
+
+      LimitAndOffsetPaginator<String> paginator = LimitAndOffsetPaginator.fromRequest(source, request);
+
+      List<String> result = paginator.select();
+      assertThat(result, is(List.of("alpha", "beta", "gamma")));
+    }
+  }
+
+  @Test
+  void throwsExceptionWhenSourceIsNull() {
+    assertThrows(
+        NullPointerException.class,
+        () -> new LimitAndOffsetPaginator<>(null, 1, 1));
+  }
+
+  @Test
+  void paginatesSingleElementList() {
+    List<String> source = List.of("only");
+    LimitAndOffsetPaginator<String> paginator = new LimitAndOffsetPaginator<>(source, 1, 0);
+
+    List<String> result = paginator.select();
+
+    assertThat(result, is(List.of("only")));
+  }
+
+  @Test
+  void returnsFullListWhenLimitExceedsSize() {
+    List<Integer> source = List.of(1, 2, 3);
+    LimitAndOffsetPaginator<Integer> paginator = new LimitAndOffsetPaginator<>(source, 10, 0);
+
+    List<Integer> result = paginator.select();
+
+    assertThat(result, is(List.of(1, 2, 3)));
+  }
+
+  @Test
+  void returnsEmptyListWhenLimitIsZero() {
+    List<String> source = List.of("a", "b", "c");
+    LimitAndOffsetPaginator<String> paginator = new LimitAndOffsetPaginator<>(source, 0, 0);
+
+    List<String> result = paginator.select();
+
+    assertThat(result.isEmpty(), is(true));
+  }
+
+  @Test
+  void returnsEmptyListWhenOffsetExceedsSize() {
+    List<Integer> source = List.of(1, 2, 3);
+    LimitAndOffsetPaginator<Integer> paginator = new LimitAndOffsetPaginator<>(source, 2, 5);
+
+    List<Integer> result = paginator.select();
+
+    assertThat(result.isEmpty(), is(true));
+  }
+
+  @Test
+  void throwsExceptionWhenBothLimitAndOffsetAreNegative() {
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> new LimitAndOffsetPaginator<>(Collections.emptyList(), -1, -1));
+  }
+}
